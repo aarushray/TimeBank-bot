@@ -94,10 +94,26 @@ async def create_request(telegram_id, title, desc, hours):
 async def accept_request(request_id, accepter_id):
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE requests SET open = FALSE, accepter_id = $1, accepted_at = NOW() WHERE request_id = $2 AND open = TRUE",
-            accepter_id, request_id
-        )
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT open, requester_id FROM requests WHERE request_id = $1",
+                request_id
+            )
+            if not row or not row["open"] or row["requester_id"] == accepter_id:
+                return False
+
+            await conn.execute(
+                """
+                UPDATE requests
+                SET open = FALSE,
+                    accepter_id = $1,
+                    accepted_at = NOW()
+                WHERE request_id = $2
+                """,
+                accepter_id, request_id
+            )
+            return True
+
 
 async def claim_request(request_id, claimer_id):
     pool = await get_pool()

@@ -501,9 +501,13 @@ async def callback_accept(call):
     request_id = int(call.data.split(':')[1])
     telegram_id = call.from_user.id
 
-    # Accept the request
-    await accept_request(request_id, telegram_id)
+    success = await accept_request(request_id, telegram_id)
 
+    if not success:
+        await bot.answer_callback_query(call.id, "❌ Cannot accept request.")
+        return  # STOP HERE
+
+    # Otherwise: success
     await bot.answer_callback_query(
         call.id,
         "✅ Request accepted! Complete it to earn credits."
