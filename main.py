@@ -13,7 +13,7 @@ from telebot.async_telebot import AsyncTeleBot
 from database import (
     get_user, add_user, update_user, init_db, 
     create_request, accept_request, claim_request, claim_refund,
-    get_db
+    get_pool
 )
 
 load_dotenv()
@@ -82,7 +82,7 @@ async def send_welcome(message):
         # User exists, go straight to main menu
         await bot.send_message(
             message.chat.id,
-            f"Welcome back, {user[1]}! 👋\n\nWhat would you like to do?",
+            f"Welcome back, {user['name']}! 👋\n\nWhat would you like to do?",
             reply_markup=get_main_menu()
         )
     else:
@@ -128,15 +128,15 @@ async def view_requests(message):
     chat_id = message.chat.id
     telegram_id = message.from_user.id
     
-    async with get_db() as db:
-        cur = await db.execute(
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        requests = await conn.fetch(
             "SELECT r.request_id, r.title, r.description, r.hours, u.name "
             "FROM requests r "
             "JOIN users u ON r.requester_id = u.telegram_id "
-            "WHERE r.open = 1 AND r.requester_id != ?",
-            (telegram_id,)
+            "WHERE r.open = TRUE AND r.requester_id != $1",
+            telegram_id
         )
-        requests = await cur.fetchall()
     
     if not requests:
         await bot.send_message(
@@ -149,7 +149,11 @@ async def view_requests(message):
     
     # Create message with inline buttons for each request
     for req in requests:
-        req_id, title, desc, hours, requester = req
+        req_id = req['request_id']
+        title = req['title']
+        desc = req['description']
+        hours = req['hours']
+        requester = req['name']
         
         text = (
             f"📋 *{title}*\n"
@@ -200,7 +204,7 @@ async def check_credits(message):
     user = await get_user(telegram_id)
     
     if user:
-        credits = user[2]
+        credits = user['credits']
         await bot.send_message(
             message.chat.id,
             f"💰 Your current balance:\n*{credits:.1f} time credits*",
@@ -249,14 +253,14 @@ async def my_requests(message):
     chat_id = message.chat.id
     telegram_id = message.from_user.id
     
-    async with get_db() as db:
-        cur = await db.execute(
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        requests = await conn.fetch(
             "SELECT request_id, title, hours, open, accepter_id, has_been_claimed, cancelled "
-            "FROM requests WHERE requester_id = ? "
+            "FROM requests WHERE requester_id = $1 "
             "ORDER BY created_at DESC",
-            (telegram_id,)
+            telegram_id
         )
-        requests = await cur.fetchall()
     
     if not requests:
         await bot.send_message(
@@ -267,7 +271,13 @@ async def my_requests(message):
         return
 
     for req in requests:
-        req_id, title, hours, open_status, accepter_id, claimed, cancelled = req
+        req_id = req['request_id']
+        title = req['title']
+        hours = req['hours']
+        open_status = req['open']
+        accepter_id = req['accepter_id']
+        claimed = req['has_been_claimed']
+        cancelled = req['cancelled']
         
         if claimed:
             status = "✅ Completed"
@@ -310,14 +320,14 @@ async def requests_accepted(message):
     chat_id = message.chat.id
     telegram_id = message.from_user.id
     
-    async with get_db() as db:
-        cur = await db.execute(
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        requests = await conn.fetch(
             "SELECT request_id, title, hours, has_been_claimed "
-            "FROM requests WHERE accepter_id = ? "
+            "FROM requests WHERE accepter_id = $1 "
             "ORDER BY accepted_at DESC",
-            (telegram_id,)
+            telegram_id
         )
-        requests = await cur.fetchall()
     
     if not requests:
         await bot.send_message(
@@ -328,7 +338,10 @@ async def requests_accepted(message):
         return
     
     for req in requests:
-        req_id, title, hours, claimed = req
+        req_id = req['request_id']
+        title = req['title']
+        hours = req['hours']
+        claimed = req['has_been_claimed']
         
         if claimed:
             status = "✅ Claimed (credits received)"
@@ -491,19 +504,19 @@ async def callback_claim(call):
     telegram_id = call.from_user.id
     
     # Verify this user is the accepter
-    async with get_db() as db:
-        cur = await db.execute(
-            "SELECT accepter_id, hours FROM requests WHERE request_id = ?",
-            (request_id,)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT accepter_id, hours FROM requests WHERE request_id = $1",
+            request_id
         )
-        row = await cur.fetchone()
     
-    if not row or row[0] != telegram_id:
+    if not row or row['accepter_id'] != telegram_id:
         await bot.answer_callback_query(call.id, "❌ You didn't accept this request")
         return
     
-    hours = row[1]
-    success = await claim_request(request_id)
+    hours = row['hours']
+    success = await claim_request(request_id, telegram_id)
     
     if success:
         await bot.answer_callback_query(
@@ -532,18 +545,18 @@ async def callback_refund(call):
     telegram_id = call.from_user.id
     
     # Verify this user is the requester
-    async with get_db() as db:
-        cur = await db.execute(
-            "SELECT requester_id, hours FROM requests WHERE request_id = ?",
-            (request_id,)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT requester_id, hours FROM requests WHERE request_id = $1",
+            request_id
         )
-        row = await cur.fetchone()
     
-    if not row or row[0] != telegram_id:
+    if not row or row['requester_id'] != telegram_id:
         await bot.answer_callback_query(call.id, "❌ This isn't your request")
         return
     
-    hours = row[1]
+    hours = row['hours']
     success = await claim_refund(request_id)
     
     if success:
@@ -569,9 +582,22 @@ async def callback_refund(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('complete:'))
 async def callback_complete(call):
     request_id = int(call.data.split(':')[1])
+    telegram_id = call.from_user.id
     
-    # Just call claim_request to award credits to accepter
-    success = await claim_request(request_id)
+    # Get the accepter_id to pass to claim_request
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT accepter_id FROM requests WHERE request_id = $1",
+            request_id
+        )
+    
+    if not row or not row['accepter_id']:
+        await bot.answer_callback_query(call.id, "❌ No one has accepted this request yet")
+        return
+    
+    # Call claim_request with the accepter_id
+    success = await claim_request(request_id, row['accepter_id'])
     
     if success:
         await bot.answer_callback_query(call.id, "✅ Marked as complete!")
