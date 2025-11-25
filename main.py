@@ -2,6 +2,9 @@ import os
 import asyncio
 from dotenv import load_dotenv
 
+# Load .env *before* importing database
+load_dotenv(override=True)   # <-- important
+
 from telebot.types import (
     KeyboardButton,
     ReplyKeyboardMarkup,
@@ -16,7 +19,6 @@ from database import (
     get_db
 )
 
-load_dotenv()
 API_TOKEN = os.getenv("API_TOKEN")
 print("Token type:", type(API_TOKEN))
 print("Token length:", len(str(API_TOKEN)) if API_TOKEN else 0)
