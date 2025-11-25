@@ -3,20 +3,20 @@ import asyncio
 from dotenv import load_dotenv
 
 from telebot.types import (
-    KeyboardButton, 
-    ReplyKeyboardMarkup, 
-    InlineKeyboardMarkup, 
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    InlineKeyboardMarkup,
     InlineKeyboardButton
 )
 from telebot.async_telebot import AsyncTeleBot
 
 from database import (
-    get_user, add_user, update_user, init_db, 
+    get_user, add_user, update_user, init_db,
     create_request, accept_request, claim_request, claim_refund,
-    get_pool
+    get_db
 )
 
-load_dotenv(override=True)
+load_dotenv()
 API_TOKEN = os.getenv("API_TOKEN")
 print("Token type:", type(API_TOKEN))
 print("Token length:", len(str(API_TOKEN)) if API_TOKEN else 0)
@@ -46,6 +46,7 @@ def get_main_menu():
     keyboard.add(KeyboardButton("❓ Click here to understand how to use me"))
     return keyboard
 
+
 def get_activity_menu():
     """Returns the My Activity submenu"""
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
@@ -56,11 +57,13 @@ def get_activity_menu():
     keyboard.add(KeyboardButton("⬅️ Back to Menu"))
     return keyboard
 
+
 def get_cancel_menu():
     """Returns a menu with just Cancel button"""
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
     keyboard.add(KeyboardButton("❌ Cancel"))
     return keyboard
+
 
 def get_contact_keyboard():
     """Returns keyboard asking for contact"""
@@ -71,27 +74,28 @@ def get_contact_keyboard():
 
 # ==================== START & REGISTRATION ====================
 
+
 @bot.message_handler(commands=['start'])
 async def send_welcome(message):
     telegram_id = message.from_user.id
-    
+
     # Check if user already exists
     user = await get_user(telegram_id)
-    
+
     if user:
-        # User exists, go straight to main menu
+        # user[1] is name in your table order
         await bot.send_message(
             message.chat.id,
-            f"Welcome back, {user['name']}! 👋\n\nWhat would you like to do?",
+            f"Welcome back, {user[1]}! 👋\n\nWhat would you like to do?",
             reply_markup=get_main_menu()
         )
     else:
-        # New user, ask for contact
+        # New user, create minimal record first
         first = message.from_user.first_name or ""
         last = message.from_user.last_name or ""
-        
+
         await add_user(telegram_id, f"{first} {last}".strip(), 3.0, None)
-        
+
         await bot.send_message(
             message.chat.id,
             "🏦 Welcome to TimeBank Bot!\n\n"
@@ -103,17 +107,18 @@ async def send_welcome(message):
             reply_markup=get_contact_keyboard()
         )
 
+
 @bot.message_handler(content_types=['contact'])
 async def handle_contact(message):
     contact = message.contact
     telegram_id = message.from_user.id
-    
+
     first = contact.first_name or ""
     last = contact.last_name or ""
     phone_number = contact.phone_number
-    
+
     await update_user(telegram_id, name=f"{first} {last}".strip(), phone_number=phone_number)
-    
+
     await bot.send_message(
         message.chat.id,
         "✅ Thanks! Your contact info has been saved.\n\n"
@@ -123,21 +128,23 @@ async def handle_contact(message):
 
 # ==================== MAIN MENU HANDLERS ====================
 
+
 @bot.message_handler(func=lambda m: m.text == "🔍 View Requests")
 async def view_requests(message):
     chat_id = message.chat.id
     telegram_id = message.from_user.id
-    
-    pool = await get_pool()
-    async with pool.acquire() as conn:
+
+    async with await get_db() as conn:
         requests = await conn.fetch(
-            "SELECT r.request_id, r.title, r.description, r.hours, u.name "
-            "FROM requests r "
-            "JOIN users u ON r.requester_id = u.telegram_id "
-            "WHERE r.open = TRUE AND r.requester_id != $1",
+            """
+            SELECT r.request_id, r.title, r.description, r.hours, u.name
+            FROM requests r
+            JOIN users u ON r.requester_id = u.telegram_id
+            WHERE r.open = TRUE AND r.requester_id != $1
+            """,
             telegram_id
         )
-    
+
     if not requests:
         await bot.send_message(
             chat_id,
@@ -146,41 +153,42 @@ async def view_requests(message):
             reply_markup=get_main_menu()
         )
         return
-    
+
     # Create message with inline buttons for each request
     for req in requests:
-        req_id = req['request_id']
-        title = req['title']
-        desc = req['description']
-        hours = req['hours']
-        requester = req['name']
-        
+        req_id = req["request_id"]
+        title = req["title"]
+        desc = req["description"]
+        hours = req["hours"]
+        requester = req["name"]
+
         text = (
             f"📋 *{title}*\n"
             f"Requested by: {requester}\n"
             f"Hours: {hours}\n\n"
             f"{desc}"
         )
-        
+
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton(
             f"✅ Accept Request #{req_id}",
             callback_data=f"accept:{req_id}"
         ))
-        
+
         await bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
-    
+
     await bot.send_message(
         chat_id,
         "👆 Tap a button above to accept a request!",
         reply_markup=get_main_menu()
     )
 
+
 @bot.message_handler(func=lambda m: m.text == "➕ Create Request")
 async def start_create_request(message):
     chat_id = message.chat.id
     user_states[chat_id] = {'flow': 'awaiting_title', 'data': {}}
-    
+
     await bot.send_message(
         chat_id,
         "Let's create a request! 📝\n\n"
@@ -190,6 +198,7 @@ async def start_create_request(message):
         reply_markup=get_cancel_menu()
     )
 
+
 @bot.message_handler(func=lambda m: m.text == "📋 My Activity")
 async def my_activity(message):
     await bot.send_message(
@@ -198,13 +207,14 @@ async def my_activity(message):
         reply_markup=get_activity_menu()
     )
 
+
 @bot.message_handler(func=lambda m: m.text == "💰 Check Credits")
 async def check_credits(message):
     telegram_id = message.from_user.id
     user = await get_user(telegram_id)
-    
+
     if user:
-        credits = user['credits']
+        credits = user[2]
         await bot.send_message(
             message.chat.id,
             f"💰 Your current balance:\n*{credits:.1f} time credits*",
@@ -217,6 +227,7 @@ async def check_credits(message):
             "❌ User not found. Please /start again.",
             reply_markup=get_main_menu()
         )
+
 
 @bot.message_handler(func=lambda m: m.text == "❓ Click here to understand how to use me")
 async def show_help(message):
@@ -238,7 +249,7 @@ async def show_help(message):
         "• Credits are earned when you complete work\n"
         "• Cancel unused requests to get refunds"
     )
-    
+
     await bot.send_message(
         message.chat.id,
         help_text,
@@ -248,20 +259,23 @@ async def show_help(message):
 
 # ==================== ACTIVITY SUBMENU ====================
 
+
 @bot.message_handler(func=lambda m: m.text == "📤 Requests I Made")
 async def my_requests(message):
     chat_id = message.chat.id
     telegram_id = message.from_user.id
-    
-    pool = await get_pool()
-    async with pool.acquire() as conn:
+
+    async with await get_db() as conn:
         requests = await conn.fetch(
-            "SELECT request_id, title, hours, open, accepter_id, has_been_claimed, cancelled "
-            "FROM requests WHERE requester_id = $1 "
-            "ORDER BY created_at DESC",
+            """
+            SELECT request_id, title, hours, open, accepter_id, has_been_claimed, cancelled
+            FROM requests
+            WHERE requester_id = $1
+            ORDER BY created_at DESC
+            """,
             telegram_id
         )
-    
+
     if not requests:
         await bot.send_message(
             chat_id,
@@ -271,25 +285,25 @@ async def my_requests(message):
         return
 
     for req in requests:
-        req_id = req['request_id']
-        title = req['title']
-        hours = req['hours']
-        open_status = req['open']
-        accepter_id = req['accepter_id']
-        claimed = req['has_been_claimed']
-        cancelled = req['cancelled']
-        
+        req_id = req["request_id"]
+        title = req["title"]
+        hours = req["hours"]
+        open_status = req["open"]
+        accepter_id = req["accepter_id"]
+        claimed = req["has_been_claimed"]
+        cancelled = req["cancelled"]
+
         if claimed:
             status = "✅ Completed"
-            buttons = []
+            buttons = None
         elif cancelled:
             status = "❌ Cancelled"
-            buttons = []
+            buttons = None
         elif open_status:
             status = "🟢 Open (waiting for help)"
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton(
-                f"❌ Cancel & Refund",
+                "❌ Cancel & Refund",
                 callback_data=f"refund:{req_id}"
             ))
             buttons = markup
@@ -297,38 +311,41 @@ async def my_requests(message):
             status = "🟡 Accepted (waiting for completion)"
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton(
-                f"✅ Mark as Complete",
+                "✅ Mark as Complete",
                 callback_data=f"complete:{req_id}"
             ))
             buttons = markup
-        
+
         text = f"📋 *{title}*\nHours: {hours}\nStatus: {status}"
-        
+
         if buttons:
             await bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=buttons)
         else:
             await bot.send_message(chat_id, text, parse_mode="Markdown")
-    
+
     await bot.send_message(
         chat_id,
         "👆 Manage your requests above",
         reply_markup=get_activity_menu()
     )
 
+
 @bot.message_handler(func=lambda m: m.text == "📥 Requests I Accepted")
 async def requests_accepted(message):
     chat_id = message.chat.id
     telegram_id = message.from_user.id
-    
-    pool = await get_pool()
-    async with pool.acquire() as conn:
+
+    async with await get_db() as conn:
         requests = await conn.fetch(
-            "SELECT request_id, title, hours, has_been_claimed "
-            "FROM requests WHERE accepter_id = $1 "
-            "ORDER BY accepted_at DESC",
+            """
+            SELECT request_id, title, hours, has_been_claimed
+            FROM requests
+            WHERE accepter_id = $1
+            ORDER BY accepted_at DESC
+            """,
             telegram_id
         )
-    
+
     if not requests:
         await bot.send_message(
             chat_id,
@@ -336,13 +353,13 @@ async def requests_accepted(message):
             reply_markup=get_activity_menu()
         )
         return
-    
+
     for req in requests:
-        req_id = req['request_id']
-        title = req['title']
-        hours = req['hours']
-        claimed = req['has_been_claimed']
-        
+        req_id = req["request_id"]
+        title = req["title"]
+        hours = req["hours"]
+        claimed = req["has_been_claimed"]
+
         if claimed:
             status = "✅ Claimed (credits received)"
             buttons = None
@@ -354,19 +371,20 @@ async def requests_accepted(message):
                 callback_data=f"claim:{req_id}"
             ))
             buttons = markup
-        
+
         text = f"📋 *{title}*\nHours: {hours}\nStatus: {status}"
-        
+
         if buttons:
             await bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=buttons)
         else:
             await bot.send_message(chat_id, text, parse_mode="Markdown")
-    
+
     await bot.send_message(
         chat_id,
         "👆 Claim your credits above",
         reply_markup=get_activity_menu()
     )
+
 
 @bot.message_handler(func=lambda m: m.text == "⬅️ Back to Menu")
 async def back_to_menu(message):
@@ -378,27 +396,29 @@ async def back_to_menu(message):
 
 # ==================== CREATE REQUEST FLOW ====================
 
+
 @bot.message_handler(func=lambda m: m.text == "❌ Cancel")
 async def cancel_operation(message):
     chat_id = message.chat.id
     if chat_id in user_states:
         user_states.pop(chat_id)
-    
+
     await bot.send_message(
         chat_id,
         "Operation cancelled.",
         reply_markup=get_main_menu()
     )
 
-@bot.message_handler(func=lambda m: 
-    m.chat.id in user_states and 
+
+@bot.message_handler(func=lambda m:
+    m.chat.id in user_states and
     user_states[m.chat.id].get('flow') == 'awaiting_title'
 )
 async def handle_title(message):
     chat_id = message.chat.id
     user_states[chat_id]['data']['title'] = message.text.strip()
     user_states[chat_id]['flow'] = 'awaiting_description'
-    
+
     await bot.send_message(
         chat_id,
         "Great! Now provide a *description*.\n\n"
@@ -407,15 +427,16 @@ async def handle_title(message):
         reply_markup=get_cancel_menu()
     )
 
-@bot.message_handler(func=lambda m: 
-    m.chat.id in user_states and 
+
+@bot.message_handler(func=lambda m:
+    m.chat.id in user_states and
     user_states[m.chat.id].get('flow') == 'awaiting_description'
 )
 async def handle_description(message):
     chat_id = message.chat.id
     user_states[chat_id]['data']['description'] = message.text.strip()
     user_states[chat_id]['flow'] = 'awaiting_hours'
-    
+
     await bot.send_message(
         chat_id,
         "How many *hours* do you need help for?\n\n"
@@ -424,13 +445,14 @@ async def handle_description(message):
         reply_markup=get_cancel_menu()
     )
 
+
 @bot.message_handler(func=lambda m:
     m.chat.id in user_states and
     user_states[m.chat.id].get('flow') == 'awaiting_hours'
 )
 async def handle_hours(message):
     chat_id = message.chat.id
-    
+
     # Validate number
     try:
         hours = float(message.text)
@@ -440,10 +462,10 @@ async def handle_hours(message):
     except ValueError:
         await bot.send_message(chat_id, "❌ Please send a valid number:")
         return
-    
+
     data = user_states.pop(chat_id)['data']
     data['hours'] = hours
-    
+
     # Create the request
     success = await create_request(
         message.from_user.id,
@@ -451,7 +473,7 @@ async def handle_hours(message):
         data['description'],
         data['hours']
     )
-    
+
     if success:
         await bot.send_message(
             chat_id,
@@ -471,25 +493,26 @@ async def handle_hours(message):
 
 # ==================== INLINE BUTTON CALLBACKS ====================
 
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith('accept:'))
 async def callback_accept(call):
     request_id = int(call.data.split(':')[1])
     telegram_id = call.from_user.id
-    
+
     # Accept the request
     await accept_request(request_id, telegram_id)
-    
+
     await bot.answer_callback_query(
         call.id,
         "✅ Request accepted! Complete it to earn credits."
     )
-    
+
     await bot.edit_message_reply_markup(
         call.message.chat.id,
         call.message.message_id,
         reply_markup=None
     )
-    
+
     await bot.send_message(
         call.message.chat.id,
         "🎉 You've accepted this request!\n\n"
@@ -498,38 +521,38 @@ async def callback_accept(call):
         reply_markup=get_main_menu()
     )
 
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith('claim:'))
 async def callback_claim(call):
     request_id = int(call.data.split(':')[1])
     telegram_id = call.from_user.id
-    
+
     # Verify this user is the accepter
-    pool = await get_pool()
-    async with pool.acquire() as conn:
+    async with await get_db() as conn:
         row = await conn.fetchrow(
             "SELECT accepter_id, hours FROM requests WHERE request_id = $1",
             request_id
         )
-    
-    if not row or row['accepter_id'] != telegram_id:
+
+    if not row or row["accepter_id"] != telegram_id:
         await bot.answer_callback_query(call.id, "❌ You didn't accept this request")
         return
-    
-    hours = row['hours']
+
+    hours = row["hours"]
     success = await claim_request(request_id, telegram_id)
-    
+
     if success:
         await bot.answer_callback_query(
             call.id,
             f"✅ {hours} credits claimed!"
         )
-        
+
         await bot.edit_message_reply_markup(
             call.message.chat.id,
             call.message.message_id,
             reply_markup=None
         )
-        
+
         await bot.send_message(
             call.message.chat.id,
             f"🎉 You earned {hours} time credits!\n\n"
@@ -539,38 +562,38 @@ async def callback_claim(call):
     else:
         await bot.answer_callback_query(call.id, "❌ Failed to claim")
 
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith('refund:'))
 async def callback_refund(call):
     request_id = int(call.data.split(':')[1])
     telegram_id = call.from_user.id
-    
+
     # Verify this user is the requester
-    pool = await get_pool()
-    async with pool.acquire() as conn:
+    async with await get_db() as conn:
         row = await conn.fetchrow(
             "SELECT requester_id, hours FROM requests WHERE request_id = $1",
             request_id
         )
-    
-    if not row or row['requester_id'] != telegram_id:
+
+    if not row or row["requester_id"] != telegram_id:
         await bot.answer_callback_query(call.id, "❌ This isn't your request")
         return
-    
-    hours = row['hours']
+
+    hours = row["hours"]
     success = await claim_refund(request_id)
-    
+
     if success:
         await bot.answer_callback_query(
             call.id,
             f"✅ {hours} credits refunded"
         )
-        
+
         await bot.edit_message_reply_markup(
             call.message.chat.id,
             call.message.message_id,
             reply_markup=None
         )
-        
+
         await bot.send_message(
             call.message.chat.id,
             f"Request cancelled.\n{hours} credits have been returned to your account.",
@@ -579,35 +602,34 @@ async def callback_refund(call):
     else:
         await bot.answer_callback_query(call.id, "❌ Failed to refund")
 
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith('complete:'))
 async def callback_complete(call):
     request_id = int(call.data.split(':')[1])
-    telegram_id = call.from_user.id
-    
-    # Get the accepter_id to pass to claim_request
-    pool = await get_pool()
-    async with pool.acquire() as conn:
+
+    # Fetch accepter_id so we can award credits to the right user
+    async with await get_db() as conn:
         row = await conn.fetchrow(
             "SELECT accepter_id FROM requests WHERE request_id = $1",
             request_id
         )
-    
-    if not row or not row['accepter_id']:
-        await bot.answer_callback_query(call.id, "❌ No one has accepted this request yet")
+
+    if not row or row["accepter_id"] is None:
+        await bot.answer_callback_query(call.id, "❌ No accepter found for this request")
         return
-    
-    # Call claim_request with the accepter_id
-    success = await claim_request(request_id, row['accepter_id'])
-    
+
+    accepter_id = row["accepter_id"]
+    success = await claim_request(request_id, accepter_id)
+
     if success:
         await bot.answer_callback_query(call.id, "✅ Marked as complete!")
-        
+
         await bot.edit_message_reply_markup(
             call.message.chat.id,
             call.message.message_id,
             reply_markup=None
         )
-        
+
         await bot.send_message(
             call.message.chat.id,
             "✅ Request marked as complete!\n\n"
@@ -619,10 +641,12 @@ async def callback_complete(call):
 
 # ==================== MAIN ====================
 
+
 async def main():
     await init_db()
     print("🏦 TimeBank Bot is running...")
     await bot.polling(non_stop=True, request_timeout=60)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
