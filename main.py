@@ -16,7 +16,7 @@ from database import (
     get_pool
 )
 
-load_dotenv()
+load_dotenv(override=True)
 API_TOKEN = os.getenv("API_TOKEN")
 print("Token type:", type(API_TOKEN))
 print("Token length:", len(str(API_TOKEN)) if API_TOKEN else 0)
