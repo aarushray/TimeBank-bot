@@ -1,5 +1,5 @@
 # database.py - PostgreSQL version
-import asyncpg
+import asyncpg, secrets
 import os
 from datetime import datetime
 
@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS requests (
     accepter_id BIGINT,
     accepted_at TIMESTAMP,
     has_been_claimed BOOLEAN NOT NULL DEFAULT FALSE,
+    claim_key TEXT,
 
     FOREIGN KEY (requester_id) REFERENCES users(telegram_id),
     FOREIGN KEY (accepter_id) REFERENCES users(telegram_id)
@@ -91,50 +92,55 @@ async def create_request(telegram_id, title, desc, hours):
 
             return True
 
+def generate_claim_key():
+    """Generate a 6-character unique claim key"""
+    return secrets.token_urlsafe(6)[:6].upper()
+
 async def accept_request(request_id, accepter_id):
     pool = await get_pool()
+    claim_key = generate_claim_key()
     async with pool.acquire() as conn:
-        async with conn.transaction():
-            row = await conn.fetchrow(
-                "SELECT open, requester_id FROM requests WHERE request_id = $1",
-                request_id
-            )
-            if not row or not row["open"] or row["requester_id"] == accepter_id:
-                return False
-
-            await conn.execute(
-                """
-                UPDATE requests
-                SET open = FALSE,
-                    accepter_id = $1,
-                    accepted_at = NOW()
-                WHERE request_id = $2
-                """,
-                accepter_id, request_id
-            )
-            return True
+        await conn.execute(
+            "UPDATE requests SET open = FALSE, accepter_id = $1, accepted_at = NOW(), claim_key = $2 WHERE request_id = $3 AND open = TRUE",
+            accepter_id, claim_key, request_id
+        )
+    return claim_key  # Return the key to send to requester
 
 
-async def claim_request(request_id, claimer_id):
+async def claim_request(request_id, claimer_id, claim_key):
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
             try:
                 row = await conn.fetchrow(
-                    "SELECT requester_id, accepter_id, title, hours, cancelled FROM requests WHERE request_id = $1",
+                    "SELECT requester_id, accepter_id, title, hours, cancelled, claim_key, has_been_claimed FROM requests WHERE request_id = $1",
                     request_id
                 )
                 if not row:
-                    return False
+                    return {"success": False, "error": "Request not found"}
 
-                requester_id, accepter_id, title, hours, cancelled = row['requester_id'], row['accepter_id'], row['title'], row['hours'], row['cancelled']
+                requester_id = row['requester_id']
+                accepter_id = row['accepter_id']
+                title = row['title']
+                hours = row['hours']
+                cancelled = row['cancelled']
+                stored_key = row['claim_key']
+                has_been_claimed = row['has_been_claimed']
 
                 if cancelled:
-                    return False
+                    return {"success": False, "error": "Request was cancelled"}
+
+                if has_been_claimed:
+                    return {"success": False, "error": "Already claimed"}
 
                 if accepter_id != claimer_id:
-                    return False
+                    return {"success": False, "error": "You didn't accept this request"}
 
+                # Check if claim key matches
+                if stored_key != claim_key:
+                    return {"success": False, "error": "Invalid claim key"}
+
+                # Award credits
                 accepter = await conn.fetchrow(
                     "SELECT credits FROM users WHERE telegram_id = $1",
                     accepter_id
@@ -154,10 +160,10 @@ async def claim_request(request_id, claimer_id):
                     request_id, accepter_id, title, hours
                 )
 
-                return True
+                return {"success": True, "hours": hours}
             except Exception as e:
                 print(f"Claim error: {e}")
-                return False
+                return {"success": False, "error": str(e)}
 
 async def claim_refund(request_id):
     pool = await get_pool()
