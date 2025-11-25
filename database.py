@@ -155,7 +155,7 @@ async def claim_refund(request_id):
                 return False
             
             await conn.execute(
-                "UPDATE requests SET cancelled = TRUE WHERE request_id = $1",
+                "UPDATE requests SET cancelled = TRUE, open = FALSE WHERE request_id = $1",
                 request_id
             )
 
